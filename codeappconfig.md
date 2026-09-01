@@ -112,3 +112,125 @@ pac code delete-data-source -a "shared_sharepointonline" -ds "listado de wikis"
 ```
 
 y volver a agregarla con el comando del Paso 2, **reiniciando el dev server después**. Ese reinicio fue clave para que el runtime tomara el registro corregido.
+
+---
+
+# Caso real: conexión a "Listado de Wikis" (Circo Studio)
+
+## Datos usados
+
+- **Sitio**: `https://circo.sharepoint.com/sites/CircoStudia`
+- **Lista**: Listado de Wikis
+- **GUID de la lista**: `e8a34448-08a5-4183-9296-2119989a1231` (sacado de la URL `listedit.aspx?List=%7B...%7D`, sin las llaves)
+- **URL doble-encoded**: `https%253A%252F%252Fcirco.sharepoint.com%252Fsites%252FCircoStudia`
+
+## Detalle importante: el Connection ID NO llevó prefijo
+
+La guía original advertía que el Connection ID debía llevar el prefijo completo (`shared-sharepointonl-<guid>`). En este caso real, **el prefijo agregado a mano rompió el comando** (dio 404). El ID que devolvió `pac connection list` funcionó **tal cual, sin agregarle nada**:
+
+```
+pac connection list
+```
+
+Devolvió:
+
+```
+Id                               Name                       API Id                                                      Status
+c9011182426f4ac6890819c0565da14c fvignardel@circostudio.com /providers/Microsoft.PowerApps/apis/shared_sharepointonline Connected
+```
+
+Comando que funcionó (con el ID puro, sin prefijo):
+
+```
+pac code add-data-source -a "shared_sharepointonline" -c "c9011182426f4ac6890819c0565da14c" -t "e8a34448-08a5-4183-9296-2119989a1231" -d "https%253A%252F%252Fcirco.sharepoint.com%252Fsites%252FCircoStudia"
+```
+
+**Conclusión**: no asumir el prefijo por la guía. Probar primero con el ID exacto que devuelve `pac connection list`; si da 404, recién ahí probar variantes con prefijo.
+
+## Bloqueo pendiente: `pac code push` da 403 `CodeAppOperationNotAllowedInEnvironment`
+
+Después de agregar la fuente de datos, la app corría en modo local (Local Play URL) pero el `getAll()` fallaba con:
+
+```
+GET .../powerapps/apps/local/permissions?... 403 (Forbidden)
+```
+
+Esto pasa porque `power.config.json` tiene `"appId": null` — la app nunca fue registrada formalmente en el entorno. Para resolverlo hay que correr:
+
+```
+npm run build
+pac code push
+```
+
+Pero `pac code push` devuelve:
+
+```
+HTTP error status: 403 for POST .../powerapps/apps?api-version=1:
+{"error":{"code":"CodeAppOperationNotAllowedInEnvironment","message":"The environment '<id>' in tenant '<tenant-id>' does not allow this operation for this Code app '<app-id>'. Please reach out to your environment admin to enable Code app operations."}}
+```
+
+### Lo que ya se descartó
+
+- El toggle **"Power Apps Code Apps" → "Enable code apps"** en Admin Center → Environments → *Francisco Vignardel's Environment* → Settings → Features **ya está en On**. El error persiste igual, incluso esperando varios minutos para propagación.
+- El entorno usado (`Francisco Vignardel's Environment`, tipo **Developer**) es el único donde `pac admin list` muestra permisos de administrador. Los otros dos entornos "Circo Studio" no aparecen ahí.
+- El entorno **"Circo Studio" (Default)** es el entorno por defecto del tenant — ahí **no hay permisos de administrador** ni acceso a Settings (confirmado: "Circo Studio" en make.powerapps.com solo ofrece "See details", no acceso a configuración de admin).
+
+### Hipótesis pendiente de confirmar
+
+El bloqueo probablemente sea una restricción a **nivel tenant** (Circo Studio) sobre la feature Code Apps (todavía en Preview), que anula el toggle habilitado a nivel de entorno individual. Requiere que un administrador del tenant (Global Admin o Power Platform Admin, no solo Environment Admin) revise la configuración a nivel organización.
+
+**Pregunta concreta para el admin del tenant**: *"¿Está habilitada la feature 'Power Apps Code Apps' a nivel tenant? Mi entorno Developer tiene el toggle en On pero `pac code push` da 403 CodeAppOperationNotAllowedInEnvironment."*
+
+### Prueba de aislamiento: mismo error en dos entornos distintos
+
+Para descartar que el bloqueo fuera específico del entorno personal (Developer), se repitió todo el setup en el entorno **"Circo Studio" (Default, `7fa88d8c-b752-45ac-9ddb-6fac354f6545`)**:
+
+1. Backup del `power.config.json` original: `copy power.config.json power.config.francisco.json`
+2. `pac env select --environment 7fa88d8c-b752-45ac-9ddb-6fac354f6545`
+3. `Remove-Item power.config.json` (hace falta borrar el existente, `pac code init` no sobreescribe)
+4. `pac code init --displayName "CodeAppPOC" --environment 7fa88d8c-b752-45ac-9ddb-6fac354f6545`
+5. `pac connection list` → este entorno ya tenía una conexión SharePoint propia (`86c7370c0ce7445bb6c8c9916f086112`), distinta a la del entorno personal.
+6. `pac code add-data-source` con ese Connection ID → salió bien.
+7. `npm run dev` → Local Play URL con `Default-7fa88d8c-b752-45ac-9ddb-6fac354f6545` en la ruta.
+
+**Resultado: el mismo 403 en `/local/permissions`.** Esto confirma que el bloqueo **no es específico de un entorno** — ocurre igual en el entorno Developer personal y en el Default de Circo Studio. Es una restricción a **nivel tenant**.
+
+Después de la prueba, se restauró `power.config.json` al entorno personal (`cp power.config.francisco.json power.config.json`).
+
+### Prueba de aislamiento: Dataverse funcionó primero
+
+Para descartar que el 403 fuera del entorno/tenant en general, se creó una tabla nueva en Dataverse (`cr1e4_prueba`, vía Power Apps → Tables → Start from blank + Copilot) en el mismo entorno personal y se conectó:
+
+```
+pac code add-data-source -a dataverse -t cr1e4_prueba
+```
+
+Cargó sin problema, sin 403. Esto confirmó que el bloqueo era específico del conector SharePoint (o de cómo había quedado registrada esa fuente puntual), no del entorno en general.
+
+### Causa raíz real y solución: el nombre del data source con espacios
+
+El error 403 en `/local/permissions` **no era un bloqueo de tenant ni de política DLP** (esa fue una hipótesis descartada). La causa real: la fuente de SharePoint había quedado registrada originalmente como **`"listado de wikis"`** (con espacios, el *displayName*), en vez de **`"listadodewikis"`** (el `dataSourceName` real usado internamente en `dataSourcesInfo.ts`).
+
+**Solución que funcionó:**
+
+```
+pac code delete-data-source -a "shared_sharepointonline" -ds "listadodewikis"
+```
+
+(nota: sin espacios, a diferencia de como lo escribe la guía original con `-ds "listado de wikis"`)
+
+Y volver a agregarla con el mismo comando de siempre:
+
+```
+pac code add-data-source -a "shared_sharepointonline" -c "c9011182426f4ac6890819c0565da14c" -t "e8a34448-08a5-4183-9296-2119989a1231" -d "https%253A%252F%252Fcirco.sharepoint.com%252Fsites%252FCircoStudia"
+```
+
+Reiniciando `npm run dev` después. **Resultado: el listado de wikis cargó correctamente**, con todos los registros y columnas (Título, Estado, Tipo, Generada por).
+
+**Lección clave**: si `pac code delete-data-source -ds "<nombre con espacios>"` no tira error pero tampoco soluciona el problema, probar con el nombre **sin espacios** tal como aparece la clave real en `.power/schemas/appschemas/dataSourcesInfo.ts` (ej. `listadodewikis`, no `listado de wikis`). El comando puede "aceptar" el nombre con espacios sin fallar pero no matchear la entrada real a borrar, dejando el registro corrupto/duplicado que causaba el 403 de permisos.
+
+### Estado final
+
+- **Dataverse** (`cr1e4_prueba`): funciona.
+- **SharePoint** (`listadodewikis` / Listado de Wikis): funciona, tras borrar y re-agregar la fuente usando el nombre correcto (sin espacios).
+- `App.tsx` muestra ambas fuentes en la misma pantalla.

@@ -15,6 +15,7 @@ dist-ssr
 # Power Platform Code Apps
 power.config.json
 src/generated
+.power
 
 # Editor directories and files
 .vscode/*
