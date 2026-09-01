@@ -1,34 +1,55 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
+import { useEffect, useState } from 'react'
 import './App.css'
+import { LISTADODEWIKISService } from './generated/services/LISTADODEWIKISService'
+import type { LISTADODEWIKISRead } from './generated/models/LISTADODEWIKISModel'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [wikis, setWikis] = useState<LISTADODEWIKISRead[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    LISTADODEWIKISService.getAll()
+      .then((resultado) => {
+        if (resultado.success) {
+          setWikis(resultado.data)
+        } else {
+          setError('No se pudo cargar el listado de wikis.')
+        }
+      })
+      .finally(() => setLoading(false))
+  }, [])
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+    <div style={{ padding: '2rem', textAlign: 'left' }}>
+      <h1>Listado de Wikis</h1>
+
+      {loading && <p>Cargando...</p>}
+      {error && <p style={{ color: 'red' }}>{error}</p>}
+
+      {!loading && !error && (
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #444' }}>Título</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #444' }}>Estado</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #444' }}>Tipo</th>
+              <th style={{ textAlign: 'left', borderBottom: '1px solid #444' }}>Generada por</th>
+            </tr>
+          </thead>
+          <tbody>
+            {wikis.map((wiki) => (
+              <tr key={wiki.ID}>
+                <td>{wiki.Title}</td>
+                <td>{wiki.Estado?.Value ?? '-'}</td>
+                <td>{wiki.TipoWiki?.Value ?? '-'}</td>
+                <td>{wiki.GeneradaPor?.DisplayName ?? '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   )
 }
 
